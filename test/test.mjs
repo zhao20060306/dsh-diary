@@ -1,10 +1,10 @@
-﻿// dsh-diary 自检：不碰真实 ~/.dsh，全部在临时目录里跑。
+// dsh-diary 自检：不碰真实 ~/.dsh，全部在临时目录里跑。
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { bigram, openDb, insertEntry, insertDetail, search, findTopic, upsertTopic, linkEntryTopic, mergeTopics, entriesOfTopic, dayKeyOf, dayStats } from '../lib/db.js'
+import { bigram, openDb, insertEntry, insertDetail, search, findTopic, upsertTopic, linkEntryTopic, mergeTopics, entriesOfTopic, dayKeyOf, dayStats, entriesMissingVec, vecStats } from '../lib/db.js'
 import { importanceOf, preferenceSlots, matchTopics, PINNED_TOPIC, ensurePinned, freshOf } from '../lib/topics.js'
 import { settle, isSubstantive, sanitize, takeOf } from '../lib/settle.js'
 import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
@@ -58,6 +58,26 @@ t('insert+search', () => {
   assert.ok(hit.some((r) => r.id === row.id), '关键词检索应命中')
   const miss = search(db, { q: '完全不相干的词' })
   assert.equal(miss.length, 0)
+  db.close()
+})
+
+/* 5.5 补向量：老记录没向量能查出来，补上之后缺口变小 */
+t('missing-vec', () => {
+  const db = openDb(dir)
+  const before = vecStats(db)
+  assert.ok(before.total >= 1, `库里该有记录，实际 ${before.total}`)
+  assert.equal(before.done, 0, '测试库还没建过向量')
+  assert.equal(before.missing, before.total)
+  const rows = entriesMissingVec(db, 50)
+  assert.equal(rows.length, before.total, '没建向量的都该被取出来')
+  assert.ok(rows[0].id && rows[0].gist, '要带 id 和摘要')
+  assert.equal(entriesMissingVec(db, 1).length, 1, 'limit 要生效')
+  const { putVec } = { putVec: (d, id, v) => d.prepare('INSERT INTO vec(entry_id, dim, data, model, at) VALUES(?, ?, ?, ?, ?)').run(id, 3, Buffer.from(new Float32Array(v).buffer), 't', Date.now()) }
+  putVec(db, rows[0].id, [1, 0, 0])
+  const after = vecStats(db)
+  assert.equal(after.done, 1)
+  assert.equal(after.missing, before.total - 1)
+  assert.ok(!entriesMissingVec(db, 50).some((r) => r.id === rows[0].id), '补过的不该再出现')
   db.close()
 })
 
@@ -183,7 +203,8 @@ await ta('plugin-wiring', async () => {
   const dispose = apply(ctx, { dir: home, semantic: false })
 
   try {
-    assert.ok(tools.size >= 6, `工具太少：${[...tools.keys()]}`)
+    assert.ok(tools.size >= 8, `工具太少：${[...tools.keys()]}`)
+    assert.ok(tools.has('diary_reindex'), '要有补向量的工具')
     assert.equal(sections.length, 1, '要挂一个注入面')
     assert.equal(sections[0].name, 'diary:topic')
 

@@ -90,6 +90,19 @@ cd ~/.dsh/profiles/desktop/node_modules/dsh-diary && npm i @huggingface/transfor
 | `diary_topics` | 主题榜 + B站 六个位置归谁 |
 | `diary_journal` | 某天的日记 |
 | `diary_detail` | 某条记录的详细内容 |
+| `diary_reindex` | 给旧记录补向量（语义检索要用） |
+
+### 补向量
+
+向量是在**写入时**建的。从别处导入的历史记录、或者装插件之前就存在的记录，是没有向量的——它们只能被关键词搜到，同义改写搜不到。
+
+插件启动 5 秒后会在后台自动补一批（默认 300 条，`backfillLimit` 可调，设 0 关掉），补完写 `~/.dsh/diary/semantic.json`。想立刻补齐就调一次：
+
+```
+diary_reindex({ limit: 2000 })
+```
+
+> 语义层不是必需的。补不补都不影响记账和关键词检索。
 
 ## 主题怎么长
 
@@ -141,7 +154,7 @@ cd ~/.dsh/profiles/desktop/node_modules/dsh-diary && npm i @huggingface/transfor
 npm test
 ```
 
-13 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、宿主接线。
+14 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、宿主接线。
 
 ## License
 
