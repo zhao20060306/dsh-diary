@@ -9,6 +9,7 @@ import { importanceOf, preferenceSlots, matchTopics, PINNED_TOPIC, ensurePinned,
 import { settle, isSubstantive, sanitize, takeOf } from '../lib/settle.js'
 import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
 import { apply, visFor, dayKeysBack, dueSettleDays } from '../lib/index.js'
+import { ingestBili, parseWatched, topicFromTitle } from '../lib/bili.js'
 
 const ok = []
 function t(name, fn) { fn(); ok.push(name) }
@@ -207,6 +208,56 @@ t('catchup', () => {
   assert.deepEqual(dueSettleDays('2026-10-25', '2026-11-02', 3, '10:00', '23:50'), ['2026-10-30', '2026-10-31', '2026-11-01'])
 })
 
+/* 13.5 B站：从「看过」表收视频，一个视频一条记录 + 一个主题，按 BV 去重 */
+t('bili', () => {
+  const md = [
+    '# 阿尔法·B站 日记',
+    '',
+    '## 看过',
+    '',
+    '| 时间 | BV | 标题 | 想法 |',
+    '| --- | --- | --- | --- |',
+    '| 2026-11-02 02:40 | BV1RGNJzCEXq | 《原神》纳塔前瞻音乐会 | 交响乐那一段起鸡皮疙瘩 |',
+    '| 2026-11-02 03:10 | BV1DubxzVEPB | 【猫meme】我家猫又被镜子吓到 |  |',
+    '| — | 不是BV | 坏行 | 应该被跳过 |',
+    '| 2026-11-02 03:20 | BV1DubxzVEPB | 【猫meme】我家猫又被镜子吓到 | 重复一行 |',
+  ].join('\n')
+  const rows = parseWatched(md)
+  assert.equal(rows.length, 3, '坏行跳过，重复行先都抠出来（去重交给 ingest）')
+  assert.equal(rows[0].bv, 'BV1RGNJzCEXq')
+  assert.equal(rows[0].title, '《原神》纳塔前瞻音乐会')
+  assert.equal(rows[0].thought, '交响乐那一段起鸡皮疙瘩')
+  assert.ok(rows[0].atMs > 0, '时间要能解析出来')
+  assert.equal(topicFromTitle('《原神》纳塔前瞻音乐会'), '原神')
+  assert.equal(topicFromTitle('【猫meme】我家猫又被镜子吓到'), '猫meme')
+  assert.equal(topicFromTitle(''), '')
+
+  const db = openDb(dir)
+  const file = join(dir, 'whale-diary.md')
+  writeFileSync(file, md, 'utf8')
+  const first = ingestBili({ db, file })
+  assert.equal(first.added, 2, '第一次跑该收两条')
+  assert.equal(ingestBili({ db, file }).added, 0, '按 BV 去重，重复跑不再入账')
+
+  const e = db.prepare("SELECT * FROM entries WHERE ref = 'bili:BV1RGNJzCEXq'").get()
+  assert.ok(e, '要按 ref=bili:<BV> 落一条记录')
+  assert.equal(e.ch, 'bili')
+  assert.equal(e.vis, 'public', 'B站 的记录是公开的')
+  assert.equal(e.kind, 'watch')
+  assert.equal(e.source, 'bili')
+  assert.ok(e.take.includes('起鸡皮疙瘩'), e.take)
+
+  const quiet = db.prepare("SELECT * FROM entries WHERE ref = 'bili:BV1DubxzVEPB'").get()
+  assert.ok(quiet.take.length > 0, '没写想法也不能让「她的想法」空着')
+
+  const topics = db.prepare('SELECT t.name FROM topics t JOIN entry_topics et ON et.topic_id = t.id WHERE et.entry_id = ?').all(e.id).map((r) => r.name)
+  assert.ok(topics.includes('原神'), `标题里的作品要成为主题：${topics}`)
+
+  const det = db.prepare('SELECT * FROM details WHERE entry_id = ?').get(e.id)
+  assert.ok(det && det.body.includes('BV1RGNJzCEXq'), '详情层要存 BV')
+  db.close()
+})
+
 /* 14. 宿主接线：假 ctx 跑一遍 apply，四个以上工具必须注册上 */
 await ta('plugin-wiring', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-diary-home-'))
@@ -216,6 +267,14 @@ await ta('plugin-wiring', async () => {
   writeFileSync(join(home, 'pending.jsonl'), [
     JSON.stringify({ sid: 'onebot-private-10001', ch: 'qq', vis: 'private', role: 'user', text: '昨天的复盘：我打算把账本导出一份 markdown 看看结构', at: yesterdayAt }),
     JSON.stringify({ sid: 'onebot-private-10001', ch: 'qq', vis: 'private', role: 'assistant', text: '那就先导一份试试，结构乱不乱我帮你看。', at: yesterdayAt + 1000 }),
+  ].join('\n') + '\n', 'utf8')
+  // B站 的「看过」表：启动时就该收进账本
+  writeFileSync(join(home, 'whale-diary.md'), [
+    '# 阿尔法·B站 日记',
+    '## 看过',
+    '| 时间 | BV | 标题 | 想法 |',
+    '| --- | --- | --- | --- |',
+    `| ${new Date().toISOString().slice(0, 10)} 02:40 | BV1RGNJzCEXq | 《原神》纳塔前瞻音乐会 | 交响乐那段起鸡皮疙瘩 |`,
   ].join('\n') + '\n', 'utf8')
   const handlers = new Map()
   const tools = new Map()
@@ -229,7 +288,7 @@ await ta('plugin-wiring', async () => {
     systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
   const fire = (ev, ...args) => { for (const fn of handlers.get(ev) || []) fn(...args) }
-  const dispose = apply(ctx, { dir: home, semantic: false, ownerQQ: '10001' })
+  const dispose = apply(ctx, { dir: home, semantic: false, ownerQQ: '10001', biliWatchPath: join(home, 'whale-diary.md') })
 
   try {
     // 启动补跑：昨天没结算的 QQ 消息恢复后要进库，日记也要补出来
@@ -239,6 +298,11 @@ await ta('plugin-wiring', async () => {
     const yjournal = db2.prepare('SELECT * FROM journal WHERE day = ?').get(yday)
     assert.ok(yjournal && yjournal.text.includes(yentry.gist), '昨天的日记该补出来')
     assert.equal(db2.prepare("SELECT value FROM meta WHERE key = 'qq_settled_day'").get().value, yday)
+    // 启动时的 B站 入账
+    const bentry = db2.prepare("SELECT * FROM entries WHERE ref = 'bili:BV1RGNJzCEXq'").get()
+    assert.ok(bentry, '启动时该把 B站 看过表收进账本')
+    assert.equal(bentry.ch, 'bili')
+    assert.equal(bentry.vis, 'public')
     db2.close()
     assert.equal(readFileSync(join(home, 'pending.jsonl'), 'utf8'), '', '结算过的消息要从 pending 里清掉')
 
@@ -281,6 +345,7 @@ await ta('plugin-wiring', async () => {
     const bili = { agent: { session: { id: 'bili-whale', header: { id: 'bili-whale', cwd: 'C:\\x\\alpha', title: 'B站' } } } }
     const pub = await searchTool.execute({ query: '原神' }, bili)
     assert.ok(!pub.includes('她说想听原神的原声带'), `B站 不该看见私聊内容：${pub}`)
+    assert.ok(pub.includes('纳塔') || pub.includes('音乐会'), `B站 该看得见自己看过的视频：${pub}`)
 
     // 主人私聊 = 私事；陌生人的 QQ 私聊 = 公开视角
     const ownerSid = 'onebot-private-10001'
