@@ -67,7 +67,7 @@ cd ~/.dsh/profiles/desktop/node_modules/dsh-diary && npm i @huggingface/transfor
 ## 什么时候记
 
 - **桌面**：一段对话停下来（默认 10 分钟没动静）才结算，不是逐句写
-- **QQ**：每天固定时间（默认 23:50）结算一次，一天可以出多个话题
+- **QQ**：每天固定时间（默认 23:50）结算一次，一天可以出多个话题；错过这个点也没关系——没结算的消息先落在 `pending.jsonl`，重启后自动补，日记同样会补上
 - **B站**：她看视频时自己调 `diary_record`，一个视频一条
 - 寒暄、纯机械动作、「在吗」这类不写
 
@@ -138,11 +138,14 @@ diary_reindex({ limit: 2000 })
   "hfEndpoint": "https://hf-mirror.com",
   "embedModel": "Xenova/bge-small-zh-v1.5",
   "injectTopicHint": true,
-  "ownerQQ": "你的 QQ 号"
+  "ownerQQ": "你的 QQ 号",
+  "catchupDays": 3
 }
 ```
 
 `ownerQQ` 是可见性的关键：只有这个号发来的 QQ 私聊会被记成 `private`，其他人的私聊、QQ 群、B站 都是 `public`。不填的话所有 QQ 私聊都按公开处理，启动日志里会提醒一句。
+
+`catchupDays` 控制补跑范围：启动时和每 30 秒都会检查最近这几天有没有漏掉的 QQ 日结 / 日记，逐天补上；更老的就不追了，免得天天重试。
 
 ## 注入
 
@@ -161,7 +164,7 @@ diary_reindex({ limit: 2000 })
 npm test
 ```
 
-14 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、宿主接线。
+15 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、补跑、宿主接线。
 
 ## License
 

@@ -1,6 +1,6 @@
 // dsh-diary 自检：不碰真实 ~/.dsh，全部在临时目录里跑。
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -8,7 +8,7 @@ import { bigram, openDb, insertEntry, insertDetail, search, findTopic, upsertTop
 import { importanceOf, preferenceSlots, matchTopics, PINNED_TOPIC, ensurePinned, freshOf } from '../lib/topics.js'
 import { settle, isSubstantive, sanitize, takeOf } from '../lib/settle.js'
 import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
-import { apply, visFor } from '../lib/index.js'
+import { apply, visFor, dayKeysBack, dueSettleDays } from '../lib/index.js'
 
 const ok = []
 function t(name, fn) { fn(); ok.push(name) }
@@ -194,9 +194,29 @@ t('semantic-fallback', () => {
   assert.ok(Math.abs(cosine(v1, v2) - 0.7071) < 0.01)
 })
 
-/* 13. 宿主接线：假 ctx 跑一遍 apply，四个以上工具必须注册上 */
+/* 13. 补跑：漏掉的日子要算得出来，太老的不追 */
+t('catchup', () => {
+  assert.deepEqual(dayKeysBack(2, '2026-11-02'), ['2026-10-31', '2026-11-01', '2026-11-02'])
+  // 23:50 前今天不算欠，昨天算
+  assert.deepEqual(dueSettleDays('2026-10-31', '2026-11-02', 3, '10:00', '23:50'), ['2026-11-01'])
+  // 过了 23:50 今天也算
+  assert.deepEqual(dueSettleDays('2026-10-31', '2026-11-02', 3, '23:59', '23:50'), ['2026-11-01', '2026-11-02'])
+  // 昨天刚结过 → 今天 23:50 前不欠
+  assert.deepEqual(dueSettleDays('2026-11-01', '2026-11-02', 3, '10:00', '23:50'), [])
+  // 只补最近 catchupDays 天，更老的翻篇，不天天重试
+  assert.deepEqual(dueSettleDays('2026-10-25', '2026-11-02', 3, '10:00', '23:50'), ['2026-10-30', '2026-10-31', '2026-11-01'])
+})
+
+/* 14. 宿主接线：假 ctx 跑一遍 apply，四个以上工具必须注册上 */
 await ta('plugin-wiring', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-diary-home-'))
+  // 上次没结算完的消息（比如 23:50 那会儿电脑已经关了）：重启后必须补回来
+  const yesterdayAt = Date.now() - 86_400_000
+  const yday = dayKeyOf(yesterdayAt)
+  writeFileSync(join(home, 'pending.jsonl'), [
+    JSON.stringify({ sid: 'onebot-private-10001', ch: 'qq', vis: 'private', role: 'user', text: '昨天的复盘：我打算把账本导出一份 markdown 看看结构', at: yesterdayAt }),
+    JSON.stringify({ sid: 'onebot-private-10001', ch: 'qq', vis: 'private', role: 'assistant', text: '那就先导一份试试，结构乱不乱我帮你看。', at: yesterdayAt + 1000 }),
+  ].join('\n') + '\n', 'utf8')
   const handlers = new Map()
   const tools = new Map()
   const sections = []
@@ -212,6 +232,16 @@ await ta('plugin-wiring', async () => {
   const dispose = apply(ctx, { dir: home, semantic: false, ownerQQ: '10001' })
 
   try {
+    // 启动补跑：昨天没结算的 QQ 消息恢复后要进库，日记也要补出来
+    const db2 = openDb(home)
+    const yentry = db2.prepare('SELECT * FROM entries WHERE day = ? AND ch = ?').get(yday, 'qq')
+    assert.ok(yentry, '昨天没结算的 QQ 消息该在启动时补上')
+    const yjournal = db2.prepare('SELECT * FROM journal WHERE day = ?').get(yday)
+    assert.ok(yjournal && yjournal.text.includes(yentry.gist), '昨天的日记该补出来')
+    assert.equal(db2.prepare("SELECT value FROM meta WHERE key = 'qq_settled_day'").get().value, yday)
+    db2.close()
+    assert.equal(readFileSync(join(home, 'pending.jsonl'), 'utf8'), '', '结算过的消息要从 pending 里清掉')
+
     assert.ok(tools.size >= 8, `工具太少：${[...tools.keys()]}`)
     assert.ok(tools.has('diary_reindex'), '要有补向量的工具')
     assert.equal(sections.length, 1, '要挂一个注入面')
