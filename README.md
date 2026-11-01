@@ -7,8 +7,10 @@
 ## 安装
 
 ```bash
-dsh plugin --profile desktop add "dsh-diary@https://github.com/zhao20060306/dsh-diary/tarball/main"
+dsh plugin --profile desktop add "dsh-diary@https://github.com/zhao20060306/dsh-diary/tarball/<commit>"
 ```
+
+把 `<commit>` 换成具体的提交号。不要用 `tarball/main`：pnpm 会把同一个地址缓存住，你改了 main 它也不会重新拉。
 
 装完重启 DSH。首次启动会在 `~/.dsh/diary/` 建库；启动自检写在 `steps.jsonl`，失败原因写在 `fatal.json`。
 
@@ -113,9 +115,12 @@ diary_reindex({ limit: 2000 })
 
 ## 可见性
 
-- 桌面 + 和主人私聊 = `private`
-- B站、QQ 群、别人的私聊 = `public`
-- 公开视角下 `diary_*` 只返回 `public` 条目——B站 的陌生人看不到你们之间的事
+- 桌面 + **和主人**的 QQ 私聊 = `private`
+- B站、QQ 群、其他人的私聊 = `public`
+- 「谁是主人」由 `ownerQQ` 决定（见下面的配置）。**没配 `ownerQQ` 时，QQ 私聊一律按 `public` 记**——宁可少记私事，也不把陌生人的话写进私密账
+- 公开视角下 `diary_search` / `diary_day` / `diary_topic` / `diary_detail` / `diary_journal` / `diary_topics` 都只返回 `public` 的东西：日记是当场按 public 条目重算的，不会把存下来的私人版端出去；只在私事里出现过的主题名也不会露
+
+判定在**采集那一刻**做：改了 `ownerQQ` 只影响之后的记录，旧记录不会追溯改可见性。要改旧记录，直接改库里 `entries.vis`。
 
 > 注意：这是**插件层**的闸。会话本身有文件系统权限的话，绕开工具直接读文件是拦不住的。真正的隔离要落在这台机器对那个会话的 ACL 上。
 
@@ -136,6 +141,8 @@ diary_reindex({ limit: 2000 })
   "ownerQQ": "你的 QQ 号"
 }
 ```
+
+`ownerQQ` 是可见性的关键：只有这个号发来的 QQ 私聊会被记成 `private`，其他人的私聊、QQ 群、B站 都是 `public`。不填的话所有 QQ 私聊都按公开处理，启动日志里会提醒一句。
 
 ## 注入
 

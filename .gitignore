@@ -7,3 +7,6 @@ dist/
 diary/
 backup/
 .DS_Store
+
+# 本机交接文档，含本机路径，不发布
+HANDOFF.md

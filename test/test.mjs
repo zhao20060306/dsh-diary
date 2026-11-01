@@ -8,7 +8,7 @@ import { bigram, openDb, insertEntry, insertDetail, search, findTopic, upsertTop
 import { importanceOf, preferenceSlots, matchTopics, PINNED_TOPIC, ensurePinned, freshOf } from '../lib/topics.js'
 import { settle, isSubstantive, sanitize, takeOf } from '../lib/settle.js'
 import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
-import { apply } from '../lib/index.js'
+import { apply, visFor } from '../lib/index.js'
 
 const ok = []
 function t(name, fn) { fn(); ok.push(name) }
@@ -174,6 +174,15 @@ t('visibility', () => {
   const st = dayStats(db, dayKeyOf(Date.now()), { vis: 'public' })
   assert.ok(st.total >= 1)
   db.close()
+
+  // 可见性判定：只有主人私聊算私事；没配 owner 时 QQ 一律公开
+  assert.equal(visFor('desktop-abc', '', ''), 'private')
+  assert.equal(visFor('onebot-private-10001', '10001'), 'private')
+  assert.equal(visFor('onebot-private-10002', '10001'), 'public')
+  assert.equal(visFor('onebot-private-10001', ''), 'public', '没配 owner 不能默认当私事')
+  assert.equal(visFor('onebot-group-10001', '10001'), 'public', '群聊一律公开')
+  assert.equal(visFor('bili-whale', '10001'), 'public')
+  assert.equal(visFor('onebot-private-10001', '10001', 'qq'), 'private')
 })
 
 /* 12. 语义层的兜底：词典扩词 + 余弦 */
@@ -200,7 +209,7 @@ await ta('plugin-wiring', async () => {
     systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
   const fire = (ev, ...args) => { for (const fn of handlers.get(ev) || []) fn(...args) }
-  const dispose = apply(ctx, { dir: home, semantic: false })
+  const dispose = apply(ctx, { dir: home, semantic: false, ownerQQ: '10001' })
 
   try {
     assert.ok(tools.size >= 8, `工具太少：${[...tools.keys()]}`)
@@ -227,7 +236,7 @@ await ta('plugin-wiring', async () => {
 
     // 手动写一条 + 建档主题
     const rec = tools.get('diary_record')
-    const r1 = await rec.execute({ gist: '她说想听原神的原声带', take: '我也想听', topic: '原神原声' }, { agent })
+    const r1 = await rec.execute({ gist: '她说想听原神的原声带', take: '我也想听', topic: '原神原声', detail: '她原话：「那首原声带帮我留着」。' }, { agent })
     assert.ok(r1.includes('原神原声'), r1)
 
     const list = tools.get('diary_topics')
@@ -243,10 +252,50 @@ await ta('plugin-wiring', async () => {
     const pub = await searchTool.execute({ query: '原神' }, bili)
     assert.ok(!pub.includes('她说想听原神的原声带'), `B站 不该看见私聊内容：${pub}`)
 
-    // 日记
+    // 主人私聊 = 私事；陌生人的 QQ 私聊 = 公开视角
+    const ownerSid = 'onebot-private-10001'
+    const ownerAgent = { session: { id: ownerSid, header: { id: ownerSid, cwd: 'C:\\x\\alpha', title: '主人' } } }
+    fire('session/created', ownerAgent.session)
+    fire('agent/inbox/claimed', {
+      agent: ownerAgent,
+      message: { id: 'm2', content: [{ type: 'text', text: '今天加班到很晚，回家路上月亮特别大' }], source: { kind: 'user' } },
+    })
+    fire('session/event', ownerAgent.session, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '那你早点睡，月亮我替你看了。' }] } },
+    })
+    fire('session/disposed', ownerAgent.session)
+
+    const own = await searchTool.execute({ query: '月亮' }, ownerAgent)
+    assert.ok(own.includes('月亮'), `主人该看得见自己的私聊：${own}`)
+    const stranger = { agent: { session: { id: 'onebot-private-99999', header: { id: 'onebot-private-99999' } } } }
+    const str = await searchTool.execute({ query: '月亮' }, stranger)
+    assert.ok(!str.includes('月亮'), `陌生人的 QQ 私聊不该看见私事：${str}`)
+
+    // 详情 / 主题榜 / 日记：公开视角都不漏私事
+    const raw = openDb(home)
+    const pr = raw.prepare("SELECT * FROM entries WHERE vis = 'private' AND ref IS NOT NULL ORDER BY at DESC LIMIT 1").get()
+    assert.ok(pr, '该有一条带详情的私事')
+    raw.prepare('INSERT INTO journal(day, text, at, model) VALUES(?, ?, ?, ?) ON CONFLICT(day) DO UPDATE SET text = excluded.text')
+      .run(dayKeyOf(Date.now()), '# 私人日记\n- 月亮很大', Date.now(), 'rule')
+    raw.close()
+
+    const det = tools.get('diary_detail')
+    assert.ok((await det.execute({ id: pr.id }, bili)).includes('私事'), 'B站 不能按 id 翻私事的详情')
+    assert.ok((await det.execute({ id: '原声带' }, bili)).includes('找不到'), 'B站 不能按片段翻私事的详情')
+    assert.ok((await det.execute({ id: pr.id }, agent)).includes('原声带'), '主人自己能看到详情')
+
+    const tpub = await list.execute({}, bili)
+    assert.ok(!tpub.includes('原神原声'), `B站 不该看见只在私事里出现的主题：${tpub}`)
+    assert.ok(tl.includes('原神原声'), '桌面视角看得到这个主题')
+
+    // 日记：存下来的是私人版，公开视角要现算 public 版
     const jt = tools.get('diary_journal')
     const j = await jt.execute({}, { agent })
-    assert.ok(j.includes('#'), j)
+    assert.ok(j.includes('私人日记'), j)
+    const jpub = await jt.execute({}, bili)
+    assert.ok(!jpub.includes('私人日记'), `B站 不该拿到存下来的私人日记：${jpub}`)
+    assert.ok(!jpub.includes('月亮'), `B站 的日记不该含私事：${jpub}`)
 
     // 落盘物证
     assert.ok(existsSync(join(home, 'diary.db')), 'diary.db 应该存在')
