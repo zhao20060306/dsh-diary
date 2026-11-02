@@ -164,6 +164,29 @@ t('settle', () => {
   db.close()
 })
 
+/* 10.5 记账门槛：短流水不进账，够长/够重/有主题才记 */
+t('settle-gate', () => {
+  const db = openDb(dir)
+  const now = Date.now()
+  const stats = {}
+  const msgs = [
+    { role: 'user', text: '继续吧', at: now },
+    { role: 'user', text: '你看一下那个', at: now },
+    { role: 'user', text: '帮我跑个测试', at: now },
+    { role: 'user', text: '我把 favicon 换成新的了，顺手挪了下启动脚本的位置', at: now },
+    { role: 'assistant', text: '换好了，启动脚本那个我再确认一遍。', at: now },
+  ]
+  const written = settle({ db, msgs, ch: 'desktop', session: 's2', vis: 'private', stats })
+  assert.equal(written.length, 1, '只有够长那句进账')
+  assert.ok(/favicon|启动脚本/.test(written[0].gist), written[0].gist)
+  assert.equal(stats.candidates, 3, '三条实质短句 + 一条长句里的实质句')
+  assert.equal(stats.skipped, 2, '两条短流水被跳过')
+  // 门槛可调：调低就全收
+  const loose = settle({ db, msgs, ch: 'desktop', session: 's3', vis: 'private', minImp: 0, minLen: 1 })
+  assert.equal(loose.length, 3, 'minImp/minLen 调低后短句也记')
+  db.close()
+})
+
 /* 11. 可见性：公开视角看不到私事 */
 t('visibility', () => {
   const db = openDb(dir)

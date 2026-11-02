@@ -148,7 +148,9 @@ diary_reindex({ limit: 2000 })
   "petWatch": true,
   "petMemoryPath": "",
   "petWatchMs": 60000,
-  "desktopFromSessions": false
+  "desktopFromSessions": false,
+  "minImp": 0.4,
+  "minLen": 16
 }
 ```
 
@@ -159,6 +161,8 @@ diary_reindex({ limit: 2000 })
 `biliWatch` 打开 B站 自动入账；`biliWatchPath` 空着就用 `~/.dsh/whale-diary.md`，`biliWatchMs` 是轮询间隔（默认 5 分钟）。入账规则：按 BV 去重，一个视频 = 一条记录（`ch=bili`、`vis=public`、`kind=watch`）+ 一个主题，标题里的书名号 / 方括号优先当成作品名（`《原神》…` → 主题「原神」），猜不出就退回标题第一段；BV、标题、UP、她的想法和原视频链接进详情层。她没写想法时记「看完了，没写下什么想法。」——不替她编。
 
 `petWatch` 打开桌宠聊天入账；`petMemoryPath` 空着就用 `~/.dsh/dsh-pet/memory.json`（dsh-pet 自己的聊天记录），`petWatchMs` 是轮询间隔（默认 60 秒）。一问一答 = 一条 `ch=desktop`、`vis=private` 的记录，原话和她的回话进详情层，按 `ref` 去重，重复轮询不会写两遍。`desktopFromSessions` 默认 `false`：桌面上的 DSH 会话（写代码、跑长任务）不记账；设成 `true` 会退回旧行为，把每个桌面会话都结算进来——一般不需要。
+
+`minImp` / `minLen` 是会话结算的记账门槛：一句话**够重**（`imp ≥ minImp`，答应/钱/踩坑这类）、**够长**（去噪后 ≥ `minLen` 字）、**或挂得上已有主题**，才写进账本；`继续`、`你看一下那个` 这种流水直接跳过，只在日志里记「跳过 N 条流水」。会话原文永远在 `~/.dsh/sessions/`，需要细节去翻原文或用 `diary_search`。想全收就设 `"minImp": 0, "minLen": 1`。注意门槛只管 QQ / 桌面会话结算；桌宠聊天和 B站 看过表照常入账（它们本来就是稀疏的、值得记的东西）。
 
 ## 注入
 

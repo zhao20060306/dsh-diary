@@ -1,6 +1,6 @@
 {
   "name": "dsh-diary",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "阿尔法的账本与日记：一件事一条记录、主题成网、能按主题和关键词翻回去。",
   "type": "module",
   "main": "lib/index.js",
