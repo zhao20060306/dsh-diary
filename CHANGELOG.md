@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.1.7 — 2026-11-02
+
+**补向量不再假成功**
+
+- `backfillVectors` 之前把失败也算成成功：`indexEntry` 返回 `false`（模型没加载起来）时仍然 `done++`，这批行永远补不进去，循环空转到上限，`semantic.json` 还写 `added: 300`。现在只计真正写进库的条数，连续失败 5 次就停，`semantic.json` 多记 `failed` 和 `error`，日志里也留一行。
+- `diary_reindex` 的输出会报告失败条数和原因，不再只说「补了 N 条」。
+- 语义模型找不到时要在 `node_modules/@huggingface/transformers/.cache` 里放好 `bge-small-zh-v1.5`（或用 `HF_ENDPOINT` 指镜像）；README 补了这条。
+
 ## 0.1.6 — 2026-11-02
 
 **桌面只记桌宠聊天**

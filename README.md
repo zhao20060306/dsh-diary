@@ -98,11 +98,13 @@ cd ~/.dsh/profiles/desktop/node_modules/dsh-diary && npm i @huggingface/transfor
 
 向量是在**写入时**建的。从别处导入的历史记录、或者装插件之前就存在的记录，是没有向量的——它们只能被关键词搜到，同义改写搜不到。
 
-插件启动 5 秒后会在后台自动补一批（默认 300 条，`backfillLimit` 可调，设 0 关掉），补完写 `~/.dsh/diary/semantic.json`。想立刻补齐就调一次：
+插件启动 5 秒后会在后台自动补一批（默认 300 条，`backfillLimit` 可调，设 0 关掉），补完写 `~/.dsh/diary/semantic.json`，里面有 `added`（真补上的）、`failed` 和 `error`（失败原因）。连着失败会停，不会空转。想立刻补齐就调一次：
 
 ```
 diary_reindex({ limit: 2000 })
 ```
+
+模型文件要放在 `node_modules/@huggingface/transformers/.cache/Xenova/bge-small-zh-v1.5/`（`config.json`、`tokenizer.json`、`onnx/model_quantized.onnx`）。下不动的话可以从本机 engram 的模型目录复制过去，或者设 `HF_ENDPOINT` 换镜像再跑一次。
 
 > 语义层不是必需的。补不补都不影响记账和关键词检索。
 
