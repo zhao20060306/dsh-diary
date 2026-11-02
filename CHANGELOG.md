@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.1.6 — 2026-11-02
+
+**桌面只记桌宠聊天**
+
+- 新增 `lib/pet.js`：读 `~/.dsh/dsh-pet/memory.json`，一问一答 = 一条记录（`ch=desktop`、`vis=private`、`source=pet`），按 `ref=pet:<宠物>/<对话>/<时间戳>` 去重；原话和回话进详情层，带情绪词记成 `mood`。
+- `desktopFromSessions` 默认改为 `false`：桌面上的 DSH 会话（写代码、长任务）不再进账本；`true` 退回旧行为。
+- 启动时跑一次，之后每 60 秒一轮；配置项 `petWatch` / `petMemoryPath` / `petWatchMs`。
+- README、已知限制同步；测试加 1 组（17 组）：配对解析、寒暄跳过、去重、详情、启动入账、桌面会话不记账。
+
 ## 0.1.5 — 2026-11-02
 
 **B站 自动入账**（REQUIREMENTS §12 第 1 项）

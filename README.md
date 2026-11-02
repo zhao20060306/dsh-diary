@@ -66,7 +66,7 @@ cd ~/.dsh/profiles/desktop/node_modules/dsh-diary && npm i @huggingface/transfor
 
 ## 什么时候记
 
-- **桌面**：一段对话停下来（默认 10 分钟没动静）才结算，不是逐句写
+- **桌面**：只记你**和桌宠**的聊天。桌宠的对话不走 DSH 会话，插件每 60 秒读一次 `~/.dsh/dsh-pet/memory.json`，一问一答自动入账（按 ref 去重）；桌面上写代码、跑长任务这种会话**不进账本**
 - **QQ**：每天固定时间（默认 23:50）结算一次，一天可以出多个话题；错过这个点也没关系——没结算的消息先落在 `pending.jsonl`，重启后自动补，日记同样会补上
 - **B站**：插件每 5 分钟看一眼 `~/.dsh/whale-diary.md` 的 `## 看过` 表，一个视频自动入账一条（按 BV 去重，重复跑不会重复记）；她临时想补记也可以自己调 `diary_record`
 - 寒暄、纯机械动作、「在吗」这类不写
@@ -115,7 +115,7 @@ diary_reindex({ limit: 2000 })
 
 ## 可见性
 
-- 桌面 + **和主人**的 QQ 私聊 = `private`
+- 桌面（桌宠聊天）+ **和主人**的 QQ 私聊 = `private`
 - B站、QQ 群、其他人的私聊 = `public`
 - 「谁是主人」由 `ownerQQ` 决定（见下面的配置）。**没配 `ownerQQ` 时，QQ 私聊一律按 `public` 记**——宁可少记私事，也不把陌生人的话写进私密账
 - 公开视角下 `diary_search` / `diary_day` / `diary_topic` / `diary_detail` / `diary_journal` / `diary_topics` 都只返回 `public` 的东西：日记是当场按 public 条目重算的，不会把存下来的私人版端出去；只在私事里出现过的主题名也不会露
@@ -142,7 +142,11 @@ diary_reindex({ limit: 2000 })
   "catchupDays": 3,
   "biliWatch": true,
   "biliWatchPath": "",
-  "biliWatchMs": 300000
+  "biliWatchMs": 300000,
+  "petWatch": true,
+  "petMemoryPath": "",
+  "petWatchMs": 60000,
+  "desktopFromSessions": false
 }
 ```
 
@@ -152,6 +156,8 @@ diary_reindex({ limit: 2000 })
 
 `biliWatch` 打开 B站 自动入账；`biliWatchPath` 空着就用 `~/.dsh/whale-diary.md`，`biliWatchMs` 是轮询间隔（默认 5 分钟）。入账规则：按 BV 去重，一个视频 = 一条记录（`ch=bili`、`vis=public`、`kind=watch`）+ 一个主题，标题里的书名号 / 方括号优先当成作品名（`《原神》…` → 主题「原神」），猜不出就退回标题第一段；BV、标题、UP、她的想法和原视频链接进详情层。她没写想法时记「看完了，没写下什么想法。」——不替她编。
 
+`petWatch` 打开桌宠聊天入账；`petMemoryPath` 空着就用 `~/.dsh/dsh-pet/memory.json`（dsh-pet 自己的聊天记录），`petWatchMs` 是轮询间隔（默认 60 秒）。一问一答 = 一条 `ch=desktop`、`vis=private` 的记录，原话和她的回话进详情层，按 `ref` 去重，重复轮询不会写两遍。`desktopFromSessions` 默认 `false`：桌面上的 DSH 会话（写代码、跑长任务）不记账；设成 `true` 会退回旧行为，把每个桌面会话都结算进来——一般不需要。
+
 ## 注入
 
 每轮主人开口时，如果这句话命中了已有主题，会把该主题最近 3 条挂到系统提示的末尾（`diary:topic`，order 1500），当作「这一轮可以用的储备」。没命中就不注入，不占 token。
@@ -159,8 +165,9 @@ diary_reindex({ limit: 2000 })
 ## 已知限制
 
 - 规则版不会从聊天里发明主题（认不出就留空），靠 `diary_record` 或后续模型提炼补；B站 那边会从标题里猜系列名，猜错也只会多一个主题
+- 桌宠入账依赖 dsh-pet 的 `memory.json` 格式，那是它的私有文件；哪天格式变了，入账会安静地少收，不会报错
 - 判不出反讽
-- 20 分钟 / 10 分钟这类空闲判定是启发式，会话中途切段会多出一条
+- 空闲结算的启发式只对旧行为（`desktopFromSessions: true`）还成立，默认配置下桌面会话根本不进账本
 - 语义层缺模型时退化成关键词 + 词典
 
 ## 自检
@@ -169,7 +176,7 @@ diary_reindex({ limit: 2000 })
 npm test
 ```
 
-16 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、补跑、B站 入账、宿主接线。
+17 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、补跑、B站 入账、桌宠入账、宿主接线。
 
 ## License
 

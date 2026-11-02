@@ -10,6 +10,7 @@ import { settle, isSubstantive, sanitize, takeOf } from '../lib/settle.js'
 import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
 import { apply, visFor, dayKeysBack, dueSettleDays } from '../lib/index.js'
 import { ingestBili, parseWatched, topicFromTitle } from '../lib/bili.js'
+import { ingestPet, parsePetMemory } from '../lib/pet.js'
 
 const ok = []
 function t(name, fn) { fn(); ok.push(name) }
@@ -258,6 +259,45 @@ t('bili', () => {
   db.close()
 })
 
+/* 13.6 桌面：桌宠的聊天入账，一问一答一条，按 ref 去重 */
+t('pet', () => {
+  const mem = JSON.stringify({
+    main: {
+      main: {
+        messages: [
+          { role: 'user', content: '今天好累啊，不想动', ts: 1793604700000 },
+          { role: 'assistant', content: '那就趴一会儿，我陪你。', ts: 1793604701000 },
+          { role: 'user', content: '嗯', ts: 1793604702000 },
+          { role: 'user', content: '晚上想吃什么好呢', ts: 1793604720000 },
+          { role: 'assistant', content: '想吃热的，汤面吧。', ts: 1793604721000 },
+        ],
+      },
+    },
+  })
+  const pairs = parsePetMemory(mem)
+  assert.equal(pairs.length, 3, '一问一答配对，「嗯」也算一问（只是不记账）')
+  assert.equal(pairs[0].reply, '那就趴一会儿，我陪你。')
+  assert.ok(pairs[0].ref.startsWith('pet:main/main/'), pairs[0].ref)
+  assert.deepEqual(parsePetMemory('不是 json'), [], '读坏不炸')
+
+  const h = mkdtempSync(join(tmpdir(), 'dsh-diary-pet-'))
+  const db = openDb(h)
+  const file = join(h, 'memory.json')
+  writeFileSync(file, mem, 'utf8')
+  assert.equal(ingestPet({ db, file }).added, 2, '像样的两问答该记两条，寒暄跳过')
+  assert.equal(ingestPet({ db, file }).added, 0, '按 ref 去重，重复轮询不写两遍')
+
+  const e = db.prepare("SELECT * FROM entries WHERE source = 'pet' ORDER BY at LIMIT 1").get()
+  assert.equal(e.ch, 'desktop')
+  assert.equal(e.vis, 'private', '桌宠聊天是私事')
+  assert.equal(e.kind, 'mood', '「累」算情绪')
+  assert.ok(e.take.includes('趴一会儿'), e.take)
+  const det = db.prepare('SELECT * FROM details WHERE entry_id = ?').get(e.id)
+  assert.ok(det && det.body.includes('今天好累啊'), '详情要留原话')
+  db.close()
+  rmSync(h, { recursive: true, force: true })
+})
+
 /* 14. 宿主接线：假 ctx 跑一遍 apply，四个以上工具必须注册上 */
 await ta('plugin-wiring', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-diary-home-'))
@@ -276,6 +316,13 @@ await ta('plugin-wiring', async () => {
     '| --- | --- | --- | --- |',
     `| ${new Date().toISOString().slice(0, 10)} 02:40 | BV1RGNJzCEXq | 《原神》纳塔前瞻音乐会 | 交响乐那段起鸡皮疙瘩 |`,
   ].join('\n') + '\n', 'utf8')
+  // 桌宠的聊天：它不走 DSH 会话，只落在 dsh-pet 的 memory.json 里
+  writeFileSync(join(home, 'memory.json'), JSON.stringify({
+    main: { main: { messages: [
+      { role: 'user', content: '今天好累啊，不想动', ts: Date.now() },
+      { role: 'assistant', content: '那就趴一会儿，我陪你。', ts: Date.now() },
+    ] } },
+  }), 'utf8')
   const handlers = new Map()
   const tools = new Map()
   const sections = []
@@ -288,7 +335,14 @@ await ta('plugin-wiring', async () => {
     systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
   const fire = (ev, ...args) => { for (const fn of handlers.get(ev) || []) fn(...args) }
-  const dispose = apply(ctx, { dir: home, semantic: false, ownerQQ: '10001', biliWatchPath: join(home, 'whale-diary.md') })
+  const dispose = apply(ctx, {
+    dir: home,
+    semantic: false,
+    ownerQQ: '10001',
+    biliWatchPath: join(home, 'whale-diary.md'),
+    petMemoryPath: join(home, 'memory.json'),
+    desktopFromSessions: true, // 这个用例要验证桌面会话侧的旧行为；默认是关的，见文件末尾
+  })
 
   try {
     // 启动补跑：昨天没结算的 QQ 消息恢复后要进库，日记也要补出来
@@ -303,6 +357,11 @@ await ta('plugin-wiring', async () => {
     assert.ok(bentry, '启动时该把 B站 看过表收进账本')
     assert.equal(bentry.ch, 'bili')
     assert.equal(bentry.vis, 'public')
+    // 启动时的桌宠入账
+    const pentry = db2.prepare("SELECT * FROM entries WHERE source = 'pet'").get()
+    assert.ok(pentry, '启动时该把桌宠的聊天收进账本')
+    assert.equal(pentry.ch, 'desktop')
+    assert.equal(pentry.vis, 'private')
     db2.close()
     assert.equal(readFileSync(join(home, 'pending.jsonl'), 'utf8'), '', '结算过的消息要从 pending 里清掉')
 
@@ -397,6 +456,34 @@ await ta('plugin-wiring', async () => {
     assert.ok(existsSync(join(home, 'register-ok.json')), 'register-ok.json 应该存在')
     const jsonls = readdirSync(home).filter((f) => f.endsWith('.jsonl'))
     assert.ok(jsonls.length >= 1, 'JSONL 原始流水应该也在写')
+
+    // 默认：桌面通道只记桌宠，写代码的桌面会话不进账本
+    const home2 = mkdtempSync(join(tmpdir(), 'dsh-diary-home2-'))
+    const h2 = new Map()
+    const t2 = new Map()
+    const ctx2 = {
+      logger: { info() {}, warn() {}, error() {} },
+      on(ev, fn) { h2.set(ev, [...(h2.get(ev) || []), fn]); return () => {} },
+      effect(fn) { const d = fn(); return () => { try { d?.() } catch {} } },
+      get() { return undefined },
+      tools: { register(tool) { t2.set(tool.name, tool) } },
+      systemPrompt: { section(def) { return () => {} } },
+    }
+    const fire2 = (ev, ...args) => { for (const fn of h2.get(ev) || []) fn(...args) }
+    const dispose2 = apply(ctx2, { dir: home2, semantic: false, petWatch: false })
+    try {
+      const a2 = { session: { id: 'desktop-s9', header: { id: 'desktop-s9', cwd: 'C:\\x\\alpha', title: '施工' } } }
+      fire2('session/created', a2.session)
+      fire2('agent/inbox/claimed', { agent: a2, message: { id: 'x1', content: [{ type: 'text', text: '帮我看看这个插件的日志该怎么写' }], source: { kind: 'user' } } })
+      fire2('session/event', a2.session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '先打到标准输出就行。' }] } } })
+      fire2('session/disposed', a2.session)
+      const d3 = openDb(home2)
+      assert.equal(d3.prepare("SELECT count(*) AS n FROM entries WHERE ch = 'desktop'").get().n, 0, '桌面会话不该进账本')
+      d3.close()
+    } finally {
+      try { dispose2?.() } catch {}
+      try { rmSync(home2, { recursive: true, force: true }) } catch {}
+    }
   } finally {
     try { dispose?.() } catch {}
     try { rmSync(home, { recursive: true, force: true }) } catch {}
