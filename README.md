@@ -150,7 +150,10 @@ diary_reindex({ limit: 2000 })
   "petWatchMs": 60000,
   "desktopFromSessions": false,
   "minImp": 0.4,
-  "minLen": 16
+  "minLen": 16,
+  "thinkTake": true,
+  "thinkTakeMs": 30000,
+  "memoDebug": true
 }
 ```
 
@@ -163,6 +166,8 @@ diary_reindex({ limit: 2000 })
 `petWatch` 打开桌宠聊天入账；`petMemoryPath` 空着就用 `~/.dsh/dsh-pet/memory.json`（dsh-pet 自己的聊天记录），`petWatchMs` 是轮询间隔（默认 60 秒）。一问一答 = 一条 `ch=desktop`、`vis=private` 的记录，原话和她的回话进详情层，按 `ref` 去重，重复轮询不会写两遍。`desktopFromSessions` 默认 `false`：桌面上的 DSH 会话（写代码、跑长任务）不记账；设成 `true` 会退回旧行为，把每个桌面会话都结算进来——一般不需要。
 
 `minImp` / `minLen` 是会话结算的记账门槛：一句话**够重**（`imp ≥ minImp`，答应/钱/踩坑这类）、**够长**（去噪后 ≥ `minLen` 字）、**或挂得上已有主题**，才写进账本；`继续`、`你看一下那个` 这种流水直接跳过，只在日志里记「跳过 N 条流水」。会话原文永远在 `~/.dsh/sessions/`，需要细节去翻原文或用 `diary_search`。想全收就设 `"minImp": 0, "minLen": 1`。注意门槛只管 QQ / 桌面会话结算；桌宠聊天和 B站 看过表照常入账（它们本来就是稀疏的、值得记的东西）。
+
+`thinkTake` 控制「她自己的想法」怎么来：默认 `true`，每次结算（QQ 日结 / 补跑、桌宠轮询）时把这一批对话**一次**交给当前选中的模型，让它用第一人称各写一句（8–40 字）；模型没起来、超时（`thinkTakeMs`，默认 30 秒）、输出不是 JSON 数组，全部退回原来的规则截句，绝不让建模挡住入账。记录的 `take_src` 标了来源（`model` / `rule`），方便看出哪些是模型写的。`memoDebug` 默认 `true`，把每次问模型的过程写进 `~/.dsh/diary/think.log`（`start` / `ok` / `error` / `parse-fail` / `unusable` / `no-selection`），排错用；不想留日志就设 `false`。
 
 ## 注入
 
@@ -182,7 +187,7 @@ diary_reindex({ limit: 2000 })
 npm test
 ```
 
-17 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、可见性、语义兜底、补跑、B站 入账、桌宠入账、宿主接线。
+19 组断言：分词、脱敏、值得记的判定、她自己的想法、落库与检索、补向量、主题多对多、合并、置顶、重要度衰减、结算、记账门槛、模型想法（抠 JSON / 拼消息 / 失败退回）、可见性、语义兜底、补跑、B站 入账、桌宠入账、宿主接线。
 
 ## License
 

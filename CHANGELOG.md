@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.1.9 — 2026-11-03
+
+**「她自己的想法」接小模型：结算时问一次，问不到再用规则**
+
+- 新增 `lib/memo.js`：`createThinker(ctx)` 取当前会话选中的模型（`ctx.agentDefaultModel.currentSelection()`），用 `ctx.llm.stream()` 发**一次**批量请求，让模型给这一批对话各写一句第一人称的想法（8–40 字），只接受 JSON 字符串数组；没模型、超时（`thinkTakeMs`，默认 30 秒）、输出不是 JSON 都返回 `null`，退回原来的 `takeOf` 规则截句。
+- 只在结算时调：QQ 日结 / 补跑一次、桌宠轮询一次，不跟每轮对话；`lib/settle.js` 的 `settle()` 多了 `takes` 入参，`makeEntry` 记 `take_src: model|rule`；桌宠入账同步支持 `think`。
+- 数据库 `entries` 加 `take_src` 列（老库自动 `ALTER TABLE` 补列），方便以后分辨哪些想法是模型写的。
+- 结算、补跑、桌宠轮询、会话结束全部改成异步：等模型的这段时间新消息不会被吞，只清已经结算的那一段。
+- 测试加 1 组（19 组）：`memo` 验证抠 JSON、拼请求、模型不可用退回规则、`take_src` 来源标记。
+- 插件 `inject` 补上 `llm` 与 `agentDefaultModel`：之前只声明 `['tools','systemPrompt']`，`ctx.llm` / `ctx.agentDefaultModel` 在插件里是 undefined，模型路径一直静默退回规则截句（真机上查了两轮重启才定位）。
+- 新增 `memoDebug`（默认 `true`）：每次问模型的结果写进 `~/.dsh/diary/think.log`（`start/ok/error/parse-fail/unusable/no-selection`），排错用；测试与不需要时设 `false`。
+
 ## 0.1.8 — 2026-11-02
 
 **只记有分量的，不再把流水全存一遍**

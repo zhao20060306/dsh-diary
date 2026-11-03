@@ -11,6 +11,7 @@ import { expandWithDictionary, cosine, normalizeVec } from '../lib/semantic.js'
 import { apply, visFor, dayKeysBack, dueSettleDays } from '../lib/index.js'
 import { ingestBili, parseWatched, topicFromTitle } from '../lib/bili.js'
 import { ingestPet, parsePetMemory } from '../lib/pet.js'
+import { parseTakes, createThinker } from '../lib/memo.js'
 
 const ok = []
 function t(name, fn) { fn(); ok.push(name) }
@@ -187,6 +188,57 @@ t('settle-gate', () => {
   db.close()
 })
 
+/* 10.6 「她自己的想法」接小模型：抠 JSON、拼消息、失败退回规则 */
+await ta('memo', async () => {
+  assert.deepEqual(parseTakes('```json\n["我在意的是那个副歌","想学这个"]\n```', 2), ['我在意的是那个副歌', '想学这个'])
+  assert.deepEqual(parseTakes('["只有一条"]', 2), ['只有一条', ''], '条数不足就补空串')
+  assert.equal(parseTakes('不是 JSON', 2), null, '抠不出来返回 null')
+
+  const h = mkdtempSync(join(tmpdir(), 'dsh-diary-memo-'))
+  const db = openDb(h)
+  const seen = []
+  const ctx = {
+    agentDefaultModel: { currentSelection: () => ({ provider: 'test', model: 'test-model' }) },
+    llm: {
+      async *stream(req) {
+        seen.push(req)
+        yield { type: 'text-delta', text: '["第一段：我其实有点得意", ' }
+        yield { type: 'text-delta', text: '"第二段：想学这个"]' }
+      },
+    },
+  }
+  const thinker = createThinker(ctx, { log: false })
+  assert.equal(thinker.usable(), true)
+  const takes = await thinker.ask([
+    { userText: '那个 bug 卡了两天，终于修好了', replyText: '卡这么久？' },
+    { userText: '这个插件我想学', replyText: '那就看看它怎么写的' },
+  ])
+  assert.deepEqual(takes, ['第一段：我其实有点得意', '第二段：想学这个'])
+  assert.ok(seen[0].messages[0].content[0].text.includes('他说：那个 bug 卡了两天'), '要把对话拼进请求')
+  assert.equal(seen[0].sessionId, 'dsh-diary')
+
+  // 模型没起来：usable 为 false，ask 返回 null，不抛
+  const dead = createThinker({ logger: { warn() {} } }, { log: false })
+  assert.equal(dead.usable(), false)
+  assert.equal(await dead.ask([{ userText: 'x', replyText: 'y' }]), null)
+
+  // 结算时用了模型写的想法，来源要标 model
+  const now = Date.now()
+  const msgs = [
+    { role: 'user', text: '今天把原神的帧数问题修好了，改了两处渲染顺序', at: now },
+    { role: 'assistant', text: '改两处渲染顺序就好了？我还以为要动资源加载呢。', at: now + 1000 },
+  ]
+  const written = settle({ db, msgs, ch: 'qq', session: 's9', vis: 'private', takes: ['那个卡了两天的 bug 终于过了，我有点得意'] })
+  assert.equal(written.length, 1)
+  assert.equal(written[0].take, '那个卡了两天的 bug 终于过了，我有点得意')
+  assert.equal(written[0].take_src, 'model')
+  const rule = settle({ db, msgs, ch: 'qq', session: 's10', vis: 'private' })
+  assert.equal(rule[0].take_src, 'rule', '没有想法就用规则截句，并标记来源')
+  assert.ok(rule[0].take.length > 0)
+  db.close()
+  rmSync(h, { recursive: true, force: true })
+})
+
 /* 11. 可见性：公开视角看不到私事 */
 t('visibility', () => {
   const db = openDb(dir)
@@ -283,7 +335,7 @@ t('bili', () => {
 })
 
 /* 13.6 桌面：桌宠的聊天入账，一问一答一条，按 ref 去重 */
-t('pet', () => {
+t('pet', async () => {
   const mem = JSON.stringify({
     main: {
       main: {
@@ -307,14 +359,33 @@ t('pet', () => {
   const db = openDb(h)
   const file = join(h, 'memory.json')
   writeFileSync(file, mem, 'utf8')
-  assert.equal(ingestPet({ db, file }).added, 2, '像样的两问答该记两条，寒暄跳过')
-  assert.equal(ingestPet({ db, file }).added, 0, '按 ref 去重，重复轮询不写两遍')
+  // 小模型给了想法就用它；没给/失败就退回规则截句
+  let asked = 0
+  const think = (items) => { asked += items.length; return items.map((_, i) => `这是我自己的想法第 ${i} 句`) }
+  const first = await ingestPet({ db, file, think })
+  assert.equal(asked, 2, '只问要记账的两条，寒暄不问')
+  assert.equal(first.added, 2, '像样的两问答该记两条，寒暄跳过')
+  assert.equal((await ingestPet({ db, file, think })).added, 0, '按 ref 去重，重复轮询不写两遍')
 
   const e = db.prepare("SELECT * FROM entries WHERE source = 'pet' ORDER BY at LIMIT 1").get()
   assert.equal(e.ch, 'desktop')
   assert.equal(e.vis, 'private', '桌宠聊天是私事')
   assert.equal(e.kind, 'mood', '「累」算情绪')
-  assert.ok(e.take.includes('趴一会儿'), e.take)
+  assert.equal(e.take_src, 'model', '模型写的想法要标来源')
+  assert.ok(e.take.includes('我自己的想法'), e.take)
+
+  // 模型不可用时退回规则截句，来源标 rule
+  const h2 = mkdtempSync(join(tmpdir(), 'dsh-diary-pet2-'))
+  const db2 = openDb(h2)
+  writeFileSync(join(h2, 'memory.json'), mem, 'utf8')
+  const r2 = await ingestPet({ db: db2, file: join(h2, 'memory.json'), think: () => null })
+  assert.equal(r2.added, 2)
+  const e2 = db2.prepare("SELECT * FROM entries WHERE source = 'pet' ORDER BY at LIMIT 1").get()
+  assert.equal(e2.take_src, 'rule')
+  assert.ok(e2.take.includes('趴一会儿'), e2.take)
+  db2.close()
+  rmSync(h2, { recursive: true, force: true })
+
   const det = db.prepare('SELECT * FROM details WHERE entry_id = ?').get(e.id)
   assert.ok(det && det.body.includes('今天好累啊'), '详情要留原话')
   db.close()
@@ -358,14 +429,18 @@ await ta('plugin-wiring', async () => {
     systemPrompt: { section(def) { sections.push(def); return () => {} } },
   }
   const fire = (ev, ...args) => { for (const fn of handlers.get(ev) || []) fn(...args) }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const dispose = apply(ctx, {
     dir: home,
     semantic: false,
+    memoDebug: false, // 假 ctx 没有 llm，别把 unusable 写进真实的 think.log
     ownerQQ: '10001',
     biliWatchPath: join(home, 'whale-diary.md'),
     petMemoryPath: join(home, 'memory.json'),
     desktopFromSessions: true, // 这个用例要验证桌面会话侧的旧行为；默认是关的，见文件末尾
   })
+  // 启动补跑 / 桌宠入账现在是异步的（结算时要问一次小模型），等它们落完再断言
+  await sleep(120)
 
   try {
     // 启动补跑：昨天没结算的 QQ 消息恢复后要进库，日记也要补出来
@@ -405,6 +480,7 @@ await ta('plugin-wiring', async () => {
     })
     // 会话结束 → 结算落盘
     fire('session/disposed', agent.session)
+    await sleep(80)
 
     const searchTool = tools.get('diary_search')
     const out = await searchTool.execute({ query: '主题曲' }, { agent })
@@ -442,6 +518,7 @@ await ta('plugin-wiring', async () => {
       data: { message: { content: [{ type: 'text', text: '那你早点睡，月亮我替你看了。' }] } },
     })
     fire('session/disposed', ownerAgent.session)
+    await sleep(80)
 
     const own = await searchTool.execute({ query: '月亮' }, ownerAgent)
     assert.ok(own.includes('月亮'), `主人该看得见自己的私聊：${own}`)
